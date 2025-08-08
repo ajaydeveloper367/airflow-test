@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 AIRFLOW_VERSION=2.5.1
 AIRFLOW_IMAGE="apache/airflow:$AIRFLOW_VERSION"
@@ -9,12 +9,21 @@ WEBSERVER_CONTAINER_NAME="airflow-webserver-$AIRFLOW_VERSION"
 POSTGRES_PASSWORD="airflow"
 AIRFLOW_HOME_DIR="$HOME/airflow_$AIRFLOW_VERSION"
 POSTGRES_PORT=5433
+NETWORK_NAME="airflow-net-$AIRFLOW_VERSION"
 
 mkdir -p $AIRFLOW_HOME_DIR/{dags,logs,plugins}
 
+# Ensure a dedicated network exists so containers can resolve each other by name
+if ! docker network inspect "$NETWORK_NAME" > /dev/null 2>&1; then
+  docker network create "$NETWORK_NAME"
+fi
+
 echo "🐘 Starting PostgreSQL 12..."
+# Recreate container if it already exists
+docker rm -f "$POSTGRES_CONTAINER_NAME" > /dev/null 2>&1 || true
 docker run -d \
   --name $POSTGRES_CONTAINER_NAME \
+  --network $NETWORK_NAME \
   -e POSTGRES_USER=airflow \
   -e POSTGRES_PASSWORD=$POSTGRES_PASSWORD \
   -e POSTGRES_DB=airflow \
@@ -29,27 +38,31 @@ until docker exec $POSTGRES_CONTAINER_NAME pg_isready -U airflow > /dev/null 2>&
 done
 echo "✅ PostgreSQL is ready."
 
-echo "🛠️  Running one-time Airflow DB init..."
+echo "🛠️  Running one-time Airflow DB init and creating admin user..."
+# Use the user-defined network and correct connection section (database).
 docker run --rm \
   --name airflow-init-$AIRFLOW_VERSION \
-  -e AIRFLOW__CORE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
+  --network $NETWORK_NAME \
+  -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
   -e AIRFLOW__CORE__LOAD_EXAMPLES=False \
   -v $AIRFLOW_HOME_DIR/dags:/opt/airflow/dags \
   -v $AIRFLOW_HOME_DIR/logs:/opt/airflow/logs \
   -v $AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins \
-  --network container:$POSTGRES_CONTAINER_NAME \
-  $AIRFLOW_IMAGE db init
+  $AIRFLOW_IMAGE bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"
 
 echo "🌐 Starting Airflow webserver..."
+# Recreate container if it already exists
+docker rm -f "$WEBSERVER_CONTAINER_NAME" > /dev/null 2>&1 || true
+
 docker run -d \
   --name $WEBSERVER_CONTAINER_NAME \
+  --network $NETWORK_NAME \
   -p 8080:8080 \
-  -e AIRFLOW__CORE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
+  -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
   -e AIRFLOW__CORE__LOAD_EXAMPLES=False \
   -v $AIRFLOW_HOME_DIR/dags:/opt/airflow/dags \
   -v $AIRFLOW_HOME_DIR/logs:/opt/airflow/logs \
   -v $AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins \
-  --network container:$POSTGRES_CONTAINER_NAME \
   $AIRFLOW_IMAGE webserver
 
 echo "✅ Airflow $AIRFLOW_VERSION is running at http://localhost:8080"
