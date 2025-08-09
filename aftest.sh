@@ -6,6 +6,7 @@ AIRFLOW_VERSION=2.5.1
 AIRFLOW_IMAGE="apache/airflow:$AIRFLOW_VERSION"
 POSTGRES_CONTAINER_NAME="pg-airflow-$AIRFLOW_VERSION"
 WEBSERVER_CONTAINER_NAME="airflow-webserver-$AIRFLOW_VERSION"
+SCHEDULER_CONTAINER_NAME="airflow-scheduler-$AIRFLOW_VERSION"
 POSTGRES_PASSWORD="airflow"
 AIRFLOW_HOME_DIR="$HOME/airflow_$AIRFLOW_VERSION"
 POSTGRES_PORT=5433
@@ -54,11 +55,32 @@ docker run --rm \
   --network $NETWORK_NAME \
   -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
   -e AIRFLOW__CORE__LOAD_EXAMPLES=False \
+  -e AIRFLOW__CORE__STORE_SERIALIZED_DAGS=True \
   -e AIRFLOW_UID="$CURRENT_UID" \
   -v "$AIRFLOW_HOME_DIR/dags:/opt/airflow/dags" \
   -v "$AIRFLOW_HOME_DIR/logs:/opt/airflow/logs" \
   -v "$AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins" \
-  $AIRFLOW_IMAGE bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"
+  $AIRFLOW_IMAGE bash -lc "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"
+
+# Start scheduler (needed to serialize DAGs so webserver does not parse DAG files)
+echo "⏱️  Starting Airflow scheduler..."
+docker rm -f "$SCHEDULER_CONTAINER_NAME" > /dev/null 2>&1 || true
+
+docker run -d \
+  --name $SCHEDULER_CONTAINER_NAME \
+  --network $NETWORK_NAME \
+  --shm-size=256m \
+  -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
+  -e AIRFLOW__CORE__LOAD_EXAMPLES=False \
+  -e AIRFLOW__CORE__STORE_SERIALIZED_DAGS=True \
+  -e AIRFLOW_UID="$CURRENT_UID" \
+  -v "$AIRFLOW_HOME_DIR/dags:/opt/airflow/dags" \
+  -v "$AIRFLOW_HOME_DIR/logs:/opt/airflow/logs" \
+  -v "$AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins" \
+  $AIRFLOW_IMAGE scheduler
+
+# Give scheduler a moment to create serialized DAGs (if any)
+sleep 5
 
 echo "🌐 Starting Airflow webserver..."
 # Recreate container if it already exists
@@ -71,6 +93,7 @@ docker run -d \
   -p 8080:8080 \
   -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
   -e AIRFLOW__CORE__LOAD_EXAMPLES=False \
+  -e AIRFLOW__CORE__STORE_SERIALIZED_DAGS=True \
   -e AIRFLOW_UID="$CURRENT_UID" \
   -e AIRFLOW__WEBSERVER__WORKERS=1 \
   -e AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT=120 \
