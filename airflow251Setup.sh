@@ -11,7 +11,16 @@ AIRFLOW_HOME_DIR="$HOME/airflow_$AIRFLOW_VERSION"
 POSTGRES_PORT=5433
 NETWORK_NAME="airflow-net-$AIRFLOW_VERSION"
 
-mkdir -p $AIRFLOW_HOME_DIR/{dags,logs,plugins}
+# Detect current host user/group to avoid permission issues with mounted volumes
+CURRENT_UID="$(id -u)"
+CURRENT_GID="$(id -g)"
+
+mkdir -p "$AIRFLOW_HOME_DIR"/{dags,logs,plugins}
+# Ensure subdirs exist that Airflow may write into during init
+mkdir -p "$AIRFLOW_HOME_DIR/logs/scheduler" "$AIRFLOW_HOME_DIR/logs/webserver"
+
+# Make local Airflow dirs permissive so container user (UID 50000 or mapped UID) can write
+chmod -R a+rwX "$AIRFLOW_HOME_DIR" 2>/dev/null || true
 
 # Ensure a dedicated network exists so containers can resolve each other by name
 if ! docker network inspect "$NETWORK_NAME" > /dev/null 2>&1; then
@@ -28,7 +37,7 @@ docker run -d \
   -e POSTGRES_PASSWORD=$POSTGRES_PASSWORD \
   -e POSTGRES_DB=airflow \
   -p $POSTGRES_PORT:5432 \
-  -v $AIRFLOW_HOME_DIR/db:/var/lib/postgresql/data \
+  -v "$AIRFLOW_HOME_DIR/db:/var/lib/postgresql/data" \
   postgres:12
 
 echo "⏳ Waiting for PostgreSQL to be ready..."
@@ -45,9 +54,10 @@ docker run --rm \
   --network $NETWORK_NAME \
   -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
   -e AIRFLOW__CORE__LOAD_EXAMPLES=False \
-  -v $AIRFLOW_HOME_DIR/dags:/opt/airflow/dags \
-  -v $AIRFLOW_HOME_DIR/logs:/opt/airflow/logs \
-  -v $AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins \
+  -e AIRFLOW_UID="$CURRENT_UID" \
+  -v "$AIRFLOW_HOME_DIR/dags:/opt/airflow/dags" \
+  -v "$AIRFLOW_HOME_DIR/logs:/opt/airflow/logs" \
+  -v "$AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins" \
   $AIRFLOW_IMAGE bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"
 
 echo "🌐 Starting Airflow webserver..."
@@ -60,9 +70,10 @@ docker run -d \
   -p 8080:8080 \
   -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
   -e AIRFLOW__CORE__LOAD_EXAMPLES=False \
-  -v $AIRFLOW_HOME_DIR/dags:/opt/airflow/dags \
-  -v $AIRFLOW_HOME_DIR/logs:/opt/airflow/logs \
-  -v $AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins \
+  -e AIRFLOW_UID="$CURRENT_UID" \
+  -v "$AIRFLOW_HOME_DIR/dags:/opt/airflow/dags" \
+  -v "$AIRFLOW_HOME_DIR/logs:/opt/airflow/logs" \
+  -v "$AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins" \
   $AIRFLOW_IMAGE webserver
 
 echo "✅ Airflow $AIRFLOW_VERSION is running at http://localhost:8080"
