@@ -67,10 +67,14 @@ docker rm -f "$WEBSERVER_CONTAINER_NAME" > /dev/null 2>&1 || true
 docker run -d \
   --name $WEBSERVER_CONTAINER_NAME \
   --network $NETWORK_NAME \
+  --shm-size=512m \
   -p 8080:8080 \
   -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://airflow:airflow@$POSTGRES_CONTAINER_NAME:5432/airflow" \
   -e AIRFLOW__CORE__LOAD_EXAMPLES=False \
   -e AIRFLOW_UID="$CURRENT_UID" \
+  -e AIRFLOW__WEBSERVER__WORKERS=1 \
+  -e AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT=120 \
+  -e GUNICORN_CMD_ARGS="--workers 1 --timeout 120 --worker-class sync --worker-tmp-dir /dev/shm" \
   -v "$AIRFLOW_HOME_DIR/dags:/opt/airflow/dags" \
   -v "$AIRFLOW_HOME_DIR/logs:/opt/airflow/logs" \
   -v "$AIRFLOW_HOME_DIR/plugins:/opt/airflow/plugins" \
